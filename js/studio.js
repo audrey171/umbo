@@ -576,14 +576,14 @@ function rebuild(items = strokes, transparent = false) {
   }
   requestPaint();
 }
-function paint() {
+function paint(immediate = false) {
   frame = 0;
   const rotated = space.enabled && !frontView() || strokes.some(s => s.plane && Math.abs(s.plane.front[2] - 1) > 1e-8);
   prepareWelds(strokes);
   const joinView = welds.joined;
   if (joinView && initSpatial()) space.pivot ||= scenePivot(strokes, width, height);
   if (space.gl && (joinView || rotated || sculpts.length || space.grab?.moved)) {
-    renderSpace(strokes);
+    renderSpace(strokes, false, null, null, space, immediate === true);
     space.surface.hidden = false;
     return;
   }
@@ -1310,7 +1310,7 @@ photoInput.onchange = async () => {
   }
 };
 $('export').onclick = () => {
-  paint();
+  paint(true);
   const a = document.createElement('a');
   a.download = 'umbo.ink-shell-sheet.png';
   a.href = (space.surface.hidden ? canvas : space.surface).toDataURL('image/png');

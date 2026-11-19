@@ -156,15 +156,27 @@ function cross3(a, b) {
   return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
 function meshData(s, centers = null) {
-  const verts = [];
+  const points = s.points;
+  const fan = s.mode === 'fan' && s.previous && points.length > 1;
+  const sides = isPolished(s) ? 32 : ringSides;
+  const caps = isPolished(s) || s.material === 'cartoon' ? capBands : 1;
+  const rows = fan ? Math.min(140, Math.max(8, Math.ceil(points.at(-1).d / 3))) : points.length - 1 + 2 * caps;
+  const verts = new Float32Array(rows * (fan ? 14 : sides) * 6 * 8);
+  let offset = 0;
+  function write(vertex) {
+    verts.set(vertex, offset);
+    offset += 8;
+  }
   function vertex(p) {
     return [...p, p[0], p[1], 0, 0, 1];
   }
   function strip(a, b) {
-    for (let k = 1; k < a.length; k++) verts.push(...a[k - 1], ...b[k - 1], ...b[k], ...a[k - 1], ...b[k], ...a[k]);
+    for (let k = 1; k < a.length; k++) {
+      write(a[k - 1]); write(b[k - 1]); write(b[k]);
+      write(a[k - 1]); write(b[k]); write(a[k]);
+    }
   }
-  const points = s.points;
-  if (s.mode === 'fan' && s.previous && points.length > 1) {
+  if (fan) {
     const end = points.at(-1),
       previous = s.previous.at(-1),
       mid = [(end.x + previous.x) / 2 - s.hinge.x, (end.y + previous.y) / 2 - s.hinge.y];
@@ -172,7 +184,6 @@ function meshData(s, centers = null) {
       axis = Math.hypot(...mid) || 1;
     const crown = Math.min(span * .29, Math.min(s.reach, distanceBetween(previous, s.hinge)) * .27) * (1 + .45 * s.curl);
     let last;
-    const rows = Math.min(140, Math.max(8, Math.ceil(end.d / 3)));
     for (let i = 0; i <= rows; i++) {
       const t = i / rows,
         a = ribPoint(s.previous, t),
@@ -255,7 +266,7 @@ function meshData(s, centers = null) {
       last = row;
     }
   }
-  return new Float32Array(verts);
+  return verts;
 }
 // Bake the same seeded pen marks used on paper in the stroke's own drawing plane.
 function bakeStrokeInk(stroke, data, gl, target) {
@@ -422,7 +433,7 @@ function renderPhoto(target, photo) {
   gl.uniformMatrix4fv(u.model, false, [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 }
-function renderSpace(items, picking = false, hit = null, map = null, target = space) {
+function renderSpace(items, picking = false, hit = null, map = null, target = space, immediate = false) {
   const preview = target !== space,
     gl = target.gl,
     u = target.uniform,
@@ -481,11 +492,11 @@ function renderSpace(items, picking = false, hit = null, map = null, target = sp
     if (entry.size !== s.points.length || entry.ratio !== ratio) {
       const data = meshData(s);
       gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
-      if (s.material === 'basic' || isPolished(s)) {
+      if (s.material === 'basic' || isPolished(s) || (s.material === 'cartoon' && s.mode !== 'fan' && !s.density)) {
         if (!entry.rect) {
           if (s.material === 'basic') entry.basicInk = [1, 3, 5].map(i => parseInt(s.color.slice(i, i + 2), 16) / 255).concat(1);
           // Opaque finishes cover the mesh and only textured ink needs a baked mask.
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, s.material === 'cartoon' ? 0 : 255]));
           entry.rect = [0, 0, 1, 1];
         }
       } else entry.rect = bakeStrokeInk(s, data, gl, target);
@@ -549,12 +560,17 @@ function renderSpace(items, picking = false, hit = null, map = null, target = sp
       let count = entry.count,
         model = plane,
         stride = 32;
-      if (merged) {
+      // The stencil outlines the combined silhouette while the exact fillet builds.
+      // Pointer samples on a moving limb would immediately invalidate that job.
+      const moving = !immediate && merged && (active || space.grab?.moved) &&
+        merged.parts.some(part => part.s === active?.stroke || part.s === space.grab?.stroke);
+      const geometry = merged && (merged.meshes || (!moving && fusedMeshes(merged, immediate)));
+      if (geometry) {
         const shape = entry.shapes[index] ||= {};
         shape.weldBuffer ||= gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, shape.weldBuffer);
         if (shape.cluster !== merged) {
-          const data = fusedMeshes(merged).get(part);
+          const data = geometry.get(part);
           gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
           shape.count = data.length / 10;
           shape.cluster = merged;

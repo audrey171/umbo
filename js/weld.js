@@ -16,13 +16,14 @@ function prepareWelds(items, state = welds, spatialInk = false) {
   const edits = (state === welds || spatialInk) ? sculpts : null,
     drag = (state === welds || spatialInk) && space.grab?.moved ? space.grab.delta : null;
   if (state.edits === edits && state.drag === drag && polished.length === state.items.length && polished.every((s, i) => s === state.items[i].stroke && s.points.length === state.items[i].length)) return;
+  const previousParts = state.edits === edits && !state.drag && !drag ? state.parts : null;
   state.items = polished.map(stroke => ({
     stroke,
     length: stroke.points.length
   }));
   state.edits = edits;
   state.drag = drag;
-  state.parts.clear();
+  state.parts = new Map();
   state.version++;
   state.joined = false;
   const cells = new Map();
@@ -42,6 +43,8 @@ function prepareWelds(items, state = welds, spatialInk = false) {
         s,
         plane,
         centers,
+        index: i,
+        length: s.points.length,
         segments: [],
         near: new Set()
       };
@@ -94,6 +97,15 @@ function prepareWelds(items, state = welds, spatialInk = false) {
       }
     }
     state.joined = true;
+    // A separate stroke may grow without changing this group or its pending job.
+    const previous = previousParts?.get(part.s)?.[part.index]?.cluster;
+    if (previous && previous.parts.length === group.length && group.every(member => {
+      const old = previousParts.get(member.s)?.[member.index];
+      return old?.cluster === previous && old.length === member.length;
+    })) {
+      for (const old of previous.parts) state.parts.get(old.s)[old.index] = old;
+      continue;
+    }
     const cluster = {
       parts: group,
       meshes: null
@@ -103,10 +115,8 @@ function prepareWelds(items, state = welds, spatialInk = false) {
 }
 // Sample the union of the tapered, elliptical sweeps. Extract just its exterior
 // with surface nets. The original centerlines still own width, editing and undo.
-function fusedMeshes(cluster) {
-  if (cluster.meshes) return cluster.meshes;
-  const parts = cluster.parts,
-    meshes = parts.map(() => []),
+function buildWeldGeometry(parts) {
+  const meshes = parts.map(() => []),
     segments = [];
   let maxRadius = 0;
   parts.forEach((part, id) => {
@@ -282,6 +292,56 @@ function fusedMeshes(cluster) {
       }
     }
   }
-  cluster.meshes = new Map(parts.map((p, i) => [p, new Float32Array(meshes[i])]));
-  return cluster.meshes;
+  return meshes.map(vertices => new Float32Array(vertices));
+}
+
+// Run one join job at a time. Each redraw asks for the current scene, so rapid
+// edits cannot queue a backlog or install old geometry on a newer cluster.
+let weldWorker = null;
+let buildingCluster = null;
+let workerUnavailable = false;
+function installWeld(cluster, arrays) {
+  cluster.meshes = new Map(cluster.parts.map((part, i) => [part, arrays[i]]));
+}
+function fusedMeshes(cluster, immediate = false) {
+  if (cluster.meshes) return cluster.meshes;
+  if (immediate || workerUnavailable || typeof Worker === 'undefined') {
+    installWeld(cluster, buildWeldGeometry(cluster.parts));
+    return cluster.meshes;
+  }
+  if (buildingCluster) return null;
+  try {
+    if (!weldWorker) {
+      // Embed the same pure geometry routine in the downloadable offline studio.
+      const source = [`const dot3 = ${dot3};`, difference, smoothBand, buildWeldGeometry,
+        'onmessage = ({data}) => { const meshes = buildWeldGeometry(data); postMessage(meshes, meshes.map(m => m.buffer)); };'];
+      const url = URL.createObjectURL(new Blob([source.join('\n')], {type: 'text/javascript'}));
+      try { weldWorker = new Worker(url); }
+      finally { URL.revokeObjectURL(url); }
+      weldWorker.onmessage = ({data}) => {
+        installWeld(buildingCluster, data);
+        buildingCluster = null;
+        requestPaint();
+        schedulePreview();
+      };
+      weldWorker.onerror = () => {
+        weldWorker.terminate();
+        weldWorker = buildingCluster = null;
+        workerUnavailable = true;
+        requestPaint();
+        schedulePreview();
+      };
+    }
+    // Segments also reference the whole scene graph. Send just geometry.
+    const parts = cluster.parts.map(({plane, segments}) => ({
+      plane, segments: segments.map(({start,end,ra,rb,r,from,to}) => ({start,end,ra,rb,r,from,to}))
+    }));
+    buildingCluster = cluster;
+    weldWorker.postMessage(parts);
+    return null;
+  } catch {
+    workerUnavailable = true;
+    buildingCluster = null;
+    return fusedMeshes(cluster, true);
+  }
 }

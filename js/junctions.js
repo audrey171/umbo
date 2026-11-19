@@ -14,6 +14,7 @@ class InkJunctions {
     this.pen = inkRGB(ink.color);
     this.fill = inkRGB(ink.secondary || '#ffffff');
     this.surface = null;
+    this.recentLimbs = new Map();
   }
   add(stroke, a, b) {
     const m = this.ink.paper.getTransform();
@@ -59,12 +60,28 @@ class InkJunctions {
   }
   paintTile(tile) {
     const size = joinTileSize, n = size * size, scale = this.scale;
-    const field = new Float32Array(n).fill(Infinity), second = new Float32Array(n).fill(Infinity);
-    const radius = new Float32Array(n), density = new Float32Array(n);
-    const closest = new Float32Array(n), localRadius = new Float32Array(n);
+    this.buffers ||= Array.from({length: 4}, () => new Float32Array(n));
+    const [field, second, radius, density] = this.buffers;
+    field.fill(Infinity);
+    second.fill(Infinity);
     for (const limb of tile.branches) {
-      closest.fill(Infinity);
-      for (const s of limb.segments) {
+      // Keep the nearest segment for recently painted tiles. Only newly
+      // appended segments can change that minimum. Bound the cache to 2 MiB.
+      let cache = this.recentLimbs.get(limb);
+      if (cache) this.recentLimbs.delete(limb);
+      else {
+        if (this.recentLimbs.size >= 256) {
+          const oldest = this.recentLimbs.keys().next().value;
+          cache = this.recentLimbs.get(oldest);
+          this.recentLimbs.delete(oldest);
+        } else cache = {closest: new Float32Array(n), localRadius: new Float32Array(n)};
+        cache.closest.fill(Infinity);
+        cache.count = 0;
+      }
+      this.recentLimbs.set(limb, cache);
+      const {closest, localRadius} = cache;
+      for (let j = cache.count; j < limb.segments.length; j++) {
+        const s = limb.segments[j];
         const x0 = s.x - tile.x, y0 = s.y - tile.y;
         const pad = 2.6 * Math.max(s.ra, s.rb) + scale;
         const left = Math.max(0, Math.floor(Math.min(x0, x0 + s.dx) - pad)), right = Math.min(size - 1, Math.ceil(Math.max(x0, x0 + s.dx) + pad));
@@ -77,6 +94,7 @@ class InkJunctions {
           if (d < closest[i]) { closest[i] = d; localRadius[i] = r; }
         }
       }
+      cache.count = limb.segments.length;
       for (let i = 0; i < n; i++) {
         const d = closest[i];
         if (!Number.isFinite(d)) continue;
@@ -90,7 +108,8 @@ class InkJunctions {
         density[i] += t * (limb.stroke.density - density[i]);
       }
     }
-    const out = this.ctx.createImageData(size, size);
+    const out = this.image ||= this.ctx.createImageData(size, size);
+    out.data.fill(0);
     for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
       const i = y * size + x, r = radius[i], d = field[i], edge = .78 * scale;
       if (d > edge + .5 || !Number.isFinite(second[i]) || !r) continue;
@@ -102,12 +121,15 @@ class InkJunctions {
       const weight = Math.max(grainMask, rimMask);
       if (weight <= 0) continue;
       // Look up the normal inside this tile. Use one-sided differences at its edges.
-      const gx = x === 0 ? field[i + 1] - d : x === size - 1 ? d - field[i - 1] : (field[i + 1] - field[i - 1]) * .5;
-      const gy = y === 0 ? field[i + size] - d : y === size - 1 ? d - field[i - size] : (field[i + size] - field[i - size]) * .5;
-      const q = Math.max(0, Math.min(1, 1 + d / r)), nz = Math.sqrt(1 - q * q);
-      const lit = Math.max(0, .48 + .22 * density[i] - .68 * nz + .54 * q * (.6 * gx + .8 * gy));
-      const probability = Math.min(.96, (.004 + .2 * q ** 6 + lit * .56) * inkLoad(density[i]));
-      const grain = junctionDot((tile.x + x + .5) / scale, (tile.y + y + .5) / scale, probability, density[i]);
+      let grain = 0;
+      if (density[i]) {
+        const gx = x === 0 ? field[i + 1] - d : x === size - 1 ? d - field[i - 1] : (field[i + 1] - field[i - 1]) * .5;
+        const gy = y === 0 ? field[i + size] - d : y === size - 1 ? d - field[i - size] : (field[i + size] - field[i - size]) * .5;
+        const q = Math.max(0, Math.min(1, 1 + d / r)), nz = Math.sqrt(1 - q * q);
+        const lit = Math.max(0, .48 + .22 * density[i] - .68 * nz + .54 * q * (.6 * gx + .8 * gy));
+        const probability = Math.min(.96, (.004 + .2 * q ** 6 + lit * .56) * inkLoad(density[i]));
+        grain = junctionDot((tile.x + x + .5) / scale, (tile.y + y + .5) / scale, probability, density[i]);
+      }
       const line = Math.max(grain, Math.max(0, Math.min(1, d + .5)));
       const idx = 4 * i;
       for (let k = 0; k < 3; k++) out.data[idx + k] = this.fill[k] + line * (this.pen[k] - this.fill[k]);
