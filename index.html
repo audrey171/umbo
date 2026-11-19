@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>umbo.ink — shell drawing studio</title><link rel="stylesheet" href="style.css">
+</head>
+<body>
+<audio id="boot-sound" preload="auto" src="assets/audio/umbo-boot-voice-female.opus"></audio>
+<audio id="umbo-boot-voice" preload="auto" src="assets/audio/umbo-boot-voice.opus"></audio>
+<audio id="plastic-key" preload="auto" src="assets/audio/plastic-key.opus"></audio>
+<audio id="latching-switch" preload="auto" src="assets/audio/latching-switch.opus"></audio>
+<audio id="slider-notch-01" preload="auto" src="assets/audio/slider-notch-01.opus"></audio>
+<audio id="slider-notch-02" preload="auto" src="assets/audio/slider-notch-02.opus"></audio>
+<audio id="terminal-power-on" preload="auto" src="assets/audio/terminal-power-on.opus"></audio>
+<audio id="export-chime" preload="auto" src="assets/audio/export-chime.opus"></audio>
+<audio id="pen-loop" preload="auto" loop src="assets/audio/pen-loop.mp3"></audio>
+<main id="paper"><canvas id="drawing" aria-label="Drawing canvas"></canvas><canvas id="spatial" hidden aria-hidden="true"></canvas></main>
+<aside id="drawer" aria-label="Shell drawing tools"><div id="panel">
+<section class="brush-section"><h2>Brush</h2><div class="box brushes" aria-label="Brush selection"><button data-brush="plastic" aria-pressed="true">Plastic</button><button data-brush="metal" aria-pressed="false">Metal</button><button data-brush="cartoon" aria-pressed="false">Cartoon</button><button data-brush="basic" aria-pressed="false">Basic</button>
+<div class="palette">
+  <div class="color-row"><button id="primary" class="swatch" value="#262320" aria-label="Primary Color" aria-haspopup="dialog" popovertarget="ink-picker" aria-controls="ink-picker" aria-expanded="false"></button><span>Primary Color</span></div>
+  <div class="color-row"><button id="secondary" class="swatch unset" aria-label="Secondary Color" aria-haspopup="dialog" popovertarget="ink-picker" aria-controls="ink-picker" aria-expanded="false"></button><span>Secondary Color</span><button id="clear-secondary" title="Remove secondary color" aria-label="Remove secondary color" hidden>×</button></div>
+  <div id="ink-picker" popover="auto" role="dialog" aria-labelledby="ink-title">
+    <div class="ink-heading"><span id="ink-preview" aria-hidden="true"></span><h3 id="ink-title">Primary Color</h3><button id="ink-close" aria-label="Close color picker" title="Close">×</button></div>
+    <div id="ink-field" role="group" aria-label="Color field">
+      <input id="ink-saturation" type="range" min="0" max="100" aria-label="Saturation">
+      <input id="ink-value" type="range" min="0" max="100" aria-label="Brightness">
+      <span aria-hidden="true"></span>
+    </div>
+    <input id="ink-hue" type="range" min="0" max="360" value="0" aria-label="Hue">
+    <div class="ink-footer"><label>Hex <input id="ink-hex" type="text" maxlength="7" spellcheck="false" autocomplete="off" aria-label="Hex color"></label><button id="ink-none">No fill</button></div>
+  </div>
+</div><div class="brush-preview"><span>BRUSH PREVIEW</span><button type="button" id="reset-preview" hidden title="Reset brush preview" aria-label="Reset brush preview">×</button><canvas id="preview" width="310" height="152" aria-label="Brush preview scratchpad"></canvas></div></div></section>
+<section class="dial-section"><h2>Controls</h2><div class="box knobs">
+<label><span class="knob"><img src="assets/ui/dial.svg" alt=""><img src="assets/ui/needle.svg" class="needle" alt=""><input id="curl" aria-label="Spiral" type="range" min="0" max="100" value="0"></span>Spiral</label>
+<label><span class="knob"><img src="assets/ui/dial.svg" alt=""><img src="assets/ui/needle.svg" class="needle" alt=""><input id="assist" aria-label="Ridge" type="range" min="0" max="100" value="35"></span>Ridge</label>
+<label><span class="knob"><img src="assets/ui/dial.svg" alt=""><img src="assets/ui/needle.svg" class="needle" alt=""><input id="shade" aria-label="Density" type="range" min="0" max="100" value="65"></span>Density</label>
+<label><span class="knob"><img src="assets/ui/dial.svg" alt=""><img src="assets/ui/needle.svg" class="needle" alt=""><input id="thickness" aria-label="Thickness" type="range" min="0" max="100" value="50"></span>Thickness</label>
+<label><span class="knob"><img src="assets/ui/dial.svg" alt=""><img src="assets/ui/needle.svg" class="needle" alt=""><input id="irregularity" aria-label="Irregularity" type="range" min="0" max="100" value="0"></span>Irregularity</label>
+</div></section>
+<section class="scene-section"><h2>Scene</h2><div class="box scene">
+<div class="mirror-tools" role="group" aria-label="Mirroring"><span>Mirroring</span><div><button id="mirror-lr" aria-label="Mirror X" title="Mirror left and right" aria-pressed="false">X</button><button id="mirror-tb" aria-label="Mirror Y" title="Mirror top and bottom" aria-pressed="false">Y</button></div></div>
+<label class="zoom-control">Zoom<span class="zoom-track"><span class="ticks" aria-hidden="true"><img src="assets/ui/tick.svg" alt=""><img src="assets/ui/tick2.svg" alt=""><img src="assets/ui/tick.svg" alt=""><img src="assets/ui/tick.svg" alt=""><img src="assets/ui/tick.svg" alt=""><img src="assets/ui/tick.svg" alt=""><img src="assets/ui/tick.svg" alt=""><img src="assets/ui/tick.svg" alt=""><img src="assets/ui/tick.svg" alt=""><img src="assets/ui/tick.svg" alt=""></span><input id="scene-zoom" type="range" min="95" max="140" step="5" value="100" aria-label="Scene zoom" aria-valuetext="100%" title="100%"></span></label>
+</div></section>
+<section class="space-section" aria-labelledby="space-heading">
+<h2 id="space-heading">3D</h2>
+<div class="box space-panel" id="space-panel">
+  <div class="space-screen">
+    <span aria-hidden="true">LIVE 3D</span><svg aria-hidden="true" viewBox="-94 -43 188 86" focusable="false"><g id="cube-edges"></g></svg><button type="button" id="light-sphere" title="Drag to move the light. Arrow keys fine-tune." aria-label="Light position. Drag or use arrow keys."></button>
+  </div>
+  <div class="power-row"><button id="space-toggle" aria-label="3D operational" aria-pressed="false" title="Toggle 3D"></button><span>3D Operational</span></div>
+  <div id="orbit-tools"><button id="space-draw" aria-pressed="false">Draw</button><button id="space-rotate" aria-pressed="false">Rotate</button></div><div class="hand-panel"><button id="space-hand" type="button" aria-label="Sculpt with hand" title="Sculpt with hand" aria-pressed="false"><img src="assets/ui/rim.svg" alt=""><img src="assets/ui/inner.svg" alt=""><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11 3.5a1.5 1.5 0 0 1 3 0V11 5a1.5 1.5 0 0 1 3 0v7-4.5a1.5 1.5 0 0 1 3 0v6.8c0 4.5-2.3 7.2-6.5 7.2-2.6 0-4.5-1.1-6.2-3.4l-4-5.5c-1.1-1.7.9-3.3 2.3-1.9L8 13Z"/></svg></button><label><span class="knob mini"><img src="assets/ui/small-dial.svg" alt=""><img src="assets/ui/small-needle.svg" class="needle" alt=""><input id="influence" type="range" min="0" max="100" value="35" aria-label="Hand influence"></span>Influence</label></div></div></section>
+<section class="actions-section"><h2>Controls</h2><div class="box commands"><div><div class="action-row"><button id="undo" disabled class="circle-action" aria-label="Undo" title="Undo"><img src="assets/ui/empty.svg" alt=""></button><span>Undo</span></div><div class="action-row"><button id="redo" disabled class="circle-action" aria-label="Redo" title="Redo"><img src="assets/ui/empty.svg" alt=""></button><span>Redo</span></div><div class="action-row"><button id="new" class="circle-action" aria-label="Clear" title="Clear"><img src="assets/ui/filled.svg" alt=""></button><span>Clear</span></div></div><button id="export" class="export-frame"><span>Export PNG</span></button></div></section>
+</div><button id="toggle" aria-controls="panel" aria-expanded="true" aria-label="Collapse drawer"><img src="assets/ui/grip.svg" alt=""></button></aside>
+<button class="badge" title="Studio menu" aria-label="Open studio menu" popovertarget="studio-menu"><img class="mark" src="assets/ui/mark.svg" alt=""><img class="rule" src="assets/ui/rule.svg" alt=""><span>Umbo.Ink</span></button><div id="studio-menu" popover="auto" aria-label="Studio menu"><div class="action-row"><button id="sample" class="circle-action" aria-label="Specimens" title="Specimens"><img src="assets/ui/empty.svg" alt=""></button><span>Specimens</span></div><div class="action-row"><button data-info="about" class="circle-action" aria-label="About" title="About"><img src="assets/ui/empty.svg" alt=""></button><span>About</span></div><div class="action-row"><button data-info="instructions" class="circle-action" aria-label="Instructions" title="Instructions"><img src="assets/ui/empty.svg" alt=""></button><span>Instructions</span></div></div>
+<dialog id="info"><form method="dialog"><h2 id="info-title"></h2><button aria-label="Close">Close</button></form><p id="info-text"></p></dialog>
+<script src="js/spatial.js"></script>
+<script src="js/weld.js"></script>
+<script src="js/monitor.js"></script>
+<script src="js/finishes.js"></script>
+<script src="js/studio.js"></script>
+<script src="js/picker.js"></script>
+</body>
+</html>
