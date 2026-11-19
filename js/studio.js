@@ -7,6 +7,7 @@ const settings = {
   color: $('primary').value,
   secondary: null,
   thickness: .5,
+  taper: .5,
   irregularity: 0,
   density: 0,
   assist: .35,
@@ -273,11 +274,27 @@ function edgeVariation(stroke, distance) {
   const phase = stroke.seed % 997 / 997 * Math.PI * 2;
   return stroke.irregularity * (.65 * Math.sin(distance * .19 + phase) + .35 * Math.sin(distance * .53 - phase)) * Math.min(distance / 12, 1);
 }
+// Vary the entrance of a free stroke. Attached strokes inherit the contact width.
+function taperedRadius(stroke, distance) {
+  const taper = stroke.taper ?? .5;
+  const body = 6.3 + 12 * stroke.assist;
+  const run = distance / (1 + 3 * Math.max(0, taper - .5));
+  const growth = 1 - Math.exp(-Math.max(0, run - 5) / 85);
+  const tip = distance === 0 ? .58 : 1;
+  const profile = tip * (1 - Math.max(0, taper - .5) * (1 - growth)) +
+    (2.3 + growth * (3 + 12 * stroke.assist)) * Math.min(1, run / 22);
+  const amount = Math.min(1, taper * 2);
+  return (1 - amount) * body + amount * profile;
+}
 function makeStroke(options, p) {
+  let startRadius = options.material === 'basic' ? 2.25 : .58;
+  if (options.material === 'cartoon' && options.mode === 'spiral') {
+    startRadius = taperedRadius(options, 0);
+  }
   const point = {
     ...p,
     d: 0,
-    r: (options.material === 'basic' ? 2.25 : .58) * widthScale(options),
+    r: startRadius * widthScale(options),
     phase: 0,
     turn: 0,
     angle: 0
@@ -337,6 +354,7 @@ function nextPoint(stroke, p) {
   const pressure = p.pressure ?? .5;
   let r = 1 + (2.3 + growth * (3 + 12 * a)) * Math.min(1, d / 22);
   // The lip thickens on the inside of a bend.
+  if (stroke.material === 'cartoon' && stroke.mode === 'spiral') r = taperedRadius(stroke, d);
   if (stroke.material === 'basic') r = 2.25;else if (stroke.mode === 'spiral') r *= 1 + Math.min(.5, Math.abs(bend) * 4) * a;else if (stroke.mode === 'spire') r *= 1 + growth * a * .32 * Math.sin(phase * 2 * Math.PI);else if (stroke.mode === 'cone') r = (1 + Math.min(26, d * .092)) * (1 + .1 * a * Math.sin(phase * 2 * Math.PI));else r = 1 + Math.min(1, d / 12) * 3.5;
   if (stroke.inheritedWidth) {
     const startPressure = points[0].pressure ?? .5;
@@ -1309,7 +1327,7 @@ toggle.onclick = () => {
   toggle.setAttribute('aria-expanded', String(!closed));
   toggle.setAttribute('aria-label', closed ? 'Open drawer' : 'Collapse drawer');
 };
-for (const [id, key] of [['curl', 'curl'], ['assist', 'assist'], ['shade', 'density'], ['thickness', 'thickness'], ['irregularity', 'irregularity'], ['influence', 'influence']]) {
+for (const [id, key] of [['curl', 'curl'], ['assist', 'assist'], ['shade', 'density'], ['thickness', 'thickness'], ['irregularity', 'irregularity'], ['taper', 'taper'], ['influence', 'influence']]) {
   const input = $(id),
     knob = input.parentElement,
     initial = Number(input.value);
