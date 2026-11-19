@@ -3,22 +3,22 @@ const canvas = $('drawing');
 const screen = canvas.getContext('2d');
 const settings = {
   mode: 'spiral',
-  material: 'plastic',
+  material: 'cartoon',
   color: $('primary').value,
   secondary: null,
   thickness: .5,
   irregularity: 0,
-  density: .65,
+  density: 0,
   assist: .35,
   curl: 0
 };
 const step = 2;
+let scenePhoto = null;
 let strokes = [],
   sculpts = [],
   undoStack = [],
   redoStack = [],
-  active = null,
-  specimens = false;
+  active = null;
 let width = 1,
   height = 1,
   ratio = 1,
@@ -83,16 +83,7 @@ function tickNotch() {
   const first = nextNotch++ % 2 === 0;
   playEffect(first ? 'slider-notch-01' : 'slider-notch-02', .33, first ? .083 : 0);
 }
-let sceneScale = 1;
-const zoomSlider = $('scene-zoom');
-zoomSlider.oninput = () => {
-  const scale = Number(zoomSlider.value) / 100;
-  if (scale !== sceneScale) tickNotch();
-  sceneScale = scale;
-  $('paper').style.setProperty('--scene-scale', sceneScale);
-  zoomSlider.setAttribute('aria-valuetext', zoomSlider.value + '%');
-  zoomSlider.title = zoomSlider.value + '%';
-};
+const sceneScale = 1;
 const mirrorAxes = {
   lr: false,
   tb: false
@@ -150,13 +141,14 @@ function groupFor(color, secondary, makeLayer = layer) {
     stipple: makeLayer()
   };
 }
-// Shared interiors fuse pen marks. Edges at a self-overlap are drawn
-// with the surface ink so the upper turn remains visible.
-function composite(g, ink) {
+// Composite the silhouette underneath the combined fill and grain.
+function composite(g, ink, cap) {
   if (!ink) return;
   blit(g, ink.outline);
   blit(g, ink.paper);
   blit(g, ink.stipple);
+  if (cap) cap();
+  ink.junctions?.draw(g,width,height);
 }
 function disk(g, point, radius, color) {
   g.fillStyle = color;
@@ -189,63 +181,6 @@ function random(seed) {
     n = Math.imul(1664525, n) + 1013904223 | 0;
     return (n >>> 0) / 4294967296;
   };
-}
-// A stroke only needs the nearby parts of its earlier turns. Start a
-// fresh index for each replay so drawing, undo and export agree.
-const cellSize = 32;
-function indexPoint(grid, p) {
-  const x0 = Math.floor((p.x - p.r - 1) / cellSize),
-    x1 = Math.floor((p.x + p.r + 1) / cellSize);
-  const y0 = Math.floor((p.y - p.r - 1) / cellSize),
-    y1 = Math.floor((p.y + p.r + 1) / cellSize);
-  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
-    const key = x + ',' + y;
-    if (!grid.has(key)) grid.set(key, []);
-    grid.get(key).push(p);
-  }
-}
-function previousTurn(grid, a, b) {
-  const reach = Math.max(a.r, b.r) + Math.hypot(b.x - a.x, b.y - a.y) + 1;
-  const found = new Set();
-  for (let x = Math.floor((b.x - reach) / cellSize); x <= Math.floor((b.x + reach) / cellSize); x++) {
-    for (let y = Math.floor((b.y - reach) / cellSize); y <= Math.floor((b.y + reach) / cellSize); y++) {
-      for (const p of grid.get(x + ',' + y) || []) {
-        // Neighbouring samples along an ordinary bend share a brush footprint.
-        if (b.d - p.d < Math.max(14, (p.r + b.r) * 2.3)) continue;
-        if (Math.hypot(b.x - p.x, b.y - p.y) <= reach + p.r) found.add(p);
-      }
-    }
-  }
-  return found;
-}
-function drawFold(g, old, a, b, nx, ny, stroke) {
-  if (!old.size) return;
-  g.save();
-  g.beginPath();
-  for (const p of old) {
-    g.moveTo(p.x + p.r + .75, p.y);
-    g.arc(p.x, p.y, p.r + .75, 0, 2 * Math.PI);
-  }
-  g.clip();
-  // Cover the buried turn's grain only beneath the advancing ribbon.
-  g.fillStyle = stroke.secondary || '#fff';
-  g.beginPath();
-  g.moveTo(a.x + nx * a.r, a.y + ny * a.r);
-  g.lineTo(b.x + nx * b.r, b.y + ny * b.r);
-  g.lineTo(b.x - nx * b.r, b.y - ny * b.r);
-  g.lineTo(a.x - nx * a.r, a.y - ny * a.r);
-  g.closePath();
-  g.fill();
-  g.strokeStyle = stroke.color;
-  g.lineWidth = .94;
-  g.lineCap = 'round';
-  g.beginPath();
-  for (const side of [-1, 1]) {
-    g.moveTo(a.x + side * nx * a.r, a.y + side * ny * a.r);
-    g.lineTo(b.x + side * nx * b.r, b.y + side * ny * b.r);
-  }
-  g.stroke();
-  g.restore();
 }
 // Reserve the upper part of the dial for dots that run together into ink.
 function inkLoad(density) {
@@ -295,6 +230,7 @@ function layInk(ink, stroke, a, b, seed) {
     paintFinish(ink.paper, stroke, a, b, seed);
     return;
   }
+  if (ink.trackJunctions) (ink.junctions ||= new InkJunctions(ink)).add(stroke, a, b);
   ribbon(ink.outline, a, b, .78, stroke.color);
   ribbon(ink.paper, a, b, 0, stroke.secondary || '#fff');
   const dx = b.x - a.x,
@@ -303,9 +239,6 @@ function layInk(ink, stroke, a, b, seed) {
   if (distance < .001) return;
   const nx = -dy / distance,
     ny = dx / distance;
-  const old = previousTurn(ink.strokeIndex, a, b);
-  drawFold(ink.stipple, old, a, b, nx, ny, stroke);
-  indexPoint(ink.strokeIndex, b);
   if (!stroke.density) return;
   const load = inkLoad(stroke.density),
     grain = .68 + .88 * stroke.density;
@@ -327,7 +260,8 @@ function layInk(ink, stroke, a, b, seed) {
       size = (.34 + rng() * .71) * grain;
     const grainBlend = stroke.joinedCartoon && a.d < stroke.joinRadius ? smoothBand(a.d + t * (b.d - a.d), 0, stroke.joinRadius) : 1;
     if (threshold >= probability * grainBlend) continue;
-    g.fillRect(a.x + t * dx + nx * across * radius - size / 2, a.y + t * dy + ny * across * radius - size / 2, size, size);
+    const dotSize = Math.min(size, 2 * radius * (1 - Math.abs(across)));
+    g.fillRect(a.x + t * dx + nx * across * radius - dotSize / 2, a.y + t * dy + ny * across * radius - dotSize / 2, dotSize, dotSize);
   }
 }
 function widthScale(stroke) {
@@ -426,11 +360,8 @@ function nextPoint(stroke, p) {
     r: r * (.65 + .7 * pressure) * widthScale(stroke) * (1 + .55 * edgeVariation(stroke, d))
   };
 }
-function replay(ink, stroke, complete = true) {
-  const points = stroke.points,
-    first = points[0];
-  ink.strokeIndex = new Map();
-  indexPoint(ink.strokeIndex, first);
+function startMark(ink, stroke) {
+  const first = stroke.points[0];
   if (stroke.material === 'basic') disk(ink.paper, first, first.r, stroke.color);else if (stroke.material === 'metal' || stroke.material === 'plastic') {
     ink.paper.drawImage(materialCap(finishFor(stroke), stroke.density), first.x - first.r, first.y - first.r, 2 * first.r, 2 * first.r);
   } else {
@@ -438,6 +369,19 @@ function replay(ink, stroke, complete = true) {
     disk(ink.paper, first, first.r, stroke.secondary || '#fff');
     cartoonCap(ink.stipple, stroke, first, true);
   }
+}
+// Use the same transform and draw order for incremental marks and history replay.
+function replaySceneStroke(ink, stroke, complete = true, local = false) {
+  const draw = action => inDrawingPlanes(ink,stroke,action,local);
+  draw(() => startMark(ink,stroke));
+  for (let i=1;i<stroke.points.length;i++) {
+    draw(() => layInk(ink,stroke,stroke.points[i-1],stroke.points[i],stroke.seed+i*92821));
+  }
+  if (complete) draw(() => finishCartoon(ink,stroke));
+}
+function replay(ink, stroke, complete = true) {
+  startMark(ink,stroke);
+  const points = stroke.points;
   for (let i = 1; i < points.length; i++) layInk(ink, stroke, points[i - 1], points[i], stroke.seed + i * 92821);
   if (complete) finishCartoon(ink, stroke);
 }
@@ -564,20 +508,33 @@ function drawFanRib(g, rib) {
   g.stroke();
   g.restore();
 }
+function sameInk(a, b) {
+  return a.material === b.material && a.color === b.color && (a.secondary || '#ffffff') === (b.secondary || '#ffffff');
+}
 function selectInk(color, secondary, material) {
-  if (group?.color === color && group.secondary === secondary && group.material === material) return;
+  if (group && sameInk(group, {color, secondary, material})) return;
   composite(base, group);
   group = groupFor(color, secondary);
   group.material = material;
+  group.trackJunctions = true;
 }
 let frontNeedsReplay = false;
-function replayOnPlane(ink, stroke, p) {
+function inDrawingPlanes(ink, stroke, draw, local = false) {
+  if (local || (!stroke.mirrors?.length && !stroke.plane)) {
+    draw();
+    return;
+  }
+  for (const p of strokePlanes(stroke)) withInkTransform(ink, p, draw);
+}
+function withInkTransform(ink, p, draw) {
   const layers = [ink.outline, ink.paper, ink.stipple];
   for (const g of layers) {
     g.save();
     g.transform(p.right[0], p.right[1], p.down[0], p.down[1], p.origin[0], p.origin[1]);
   }
-  replay(ink, stroke);
+  ink.plane = p;
+  draw();
+  ink.plane = null;
   for (const g of layers) g.restore();
 }
 function rebuild(items = strokes, transparent = false) {
@@ -587,23 +544,16 @@ function rebuild(items = strokes, transparent = false) {
   if (!transparent) {
     base.fillStyle = '#fff';
     base.fillRect(0, 0, width, height);
+    if (scenePhoto) base.drawImage(scenePhoto.image, scenePhoto.x, scenePhoto.y, scenePhoto.w, scenePhoto.h);
   }
   for (const stroke of items) {
     if (stroke.mode === 'fan') {
       composite(base, group);
       group = null;
       drawPlanes(base, stroke, () => drawFanRib(base, stroke));
-    } else if (stroke.plane || stroke.mirrors?.length) {
-      composite(base, group);
-      group = null;
-      for (const p of strokePlanes(stroke)) {
-        const ink = groupFor(stroke.color, stroke.secondary);
-        replayOnPlane(ink, stroke, p);
-        composite(base, ink);
-      }
     } else {
       selectInk(stroke.color, stroke.secondary, stroke.material);
-      replayOnPlane(group, stroke, paperPlane);
+      replaySceneStroke(group, stroke);
     }
   }
   requestPaint();
@@ -623,21 +573,9 @@ function paint() {
   space.surface.hidden = true;
   screen.setTransform(ratio, 0, 0, ratio, 0, 0);
   blit(screen, base);
-  if (active?.stroke?.mirrors.length) drawPlanes(screen, active.stroke, () => composite(screen, group));else composite(screen, group);
-  if (active?.stroke.points.length > 1) drawPlanes(screen, active.stroke, () => cartoonCap(screen, active.stroke, active.stroke.points.at(-1)));
-  if (active && active.tail) {
-    // Only the unfinished fraction of a sample is temporary.
-    const last = active.stroke.points.at(-1);
-    screen.strokeStyle = active.stroke.color;
-    screen.lineWidth = 1.35;
-    screen.lineCap = 'round';
-    drawPlanes(screen, active.stroke, () => {
-      screen.beginPath();
-      screen.moveTo(last.x, last.y);
-      screen.lineTo(active.tail.x, active.tail.y);
-      screen.stroke();
-    });
-  }
+  composite(screen, group, () => {
+    if (active?.stroke.points.length > 1) drawPlanes(screen, active.stroke, () => cartoonCap(screen, active.stroke, active.stroke.points.at(-1)));
+  });
   if (active?.over) blit(screen, active.over);
 }
 function requestPaint() {
@@ -647,12 +585,13 @@ function remember() {
   redoStack = [];
   undoStack.push({
     strokes: strokes.slice(),
-    specimens,
+    scenePhoto,
     sculpts
   });
   if (undoStack.length > 35) undoStack.shift();
 }
 function refresh() {
+  $('add-photo').textContent = scenePhoto ? 'Replace photo' : 'Add photo to scene';
   $('undo').disabled = !undoStack.length;
   $('redo').disabled = !redoStack.length;
 }
@@ -680,7 +619,7 @@ function endpointAt(marks, p, scene = false) {
     score = Infinity;
   const axes = scene ? viewAxes() : paperPlane;
   const lift = lastLift[scene ? 'scene' : 'preview'];
-  if (lift && marks[lift.index] === lift.source && lift.source.material === settings.material && lift.source.color === settings.color && lift.source.secondary === settings.secondary && (!scene || lift.yaw === space.yaw && lift.pitch === space.pitch && lift.edits === sculpts) && Math.hypot(p.x - lift.x, p.y - lift.y) <= 7) {
+  if (lift && marks[lift.index] === lift.source && lift.source.material === settings.material && lift.source.density === settings.density && lift.source.color === settings.color && lift.source.secondary === settings.secondary && (!scene || lift.yaw === space.yaw && lift.pitch === space.pitch && lift.edits === sculpts) && Math.hypot(p.x - lift.x, p.y - lift.y) <= 7) {
     return {
       source: lift.source,
       index: lift.index,
@@ -692,7 +631,7 @@ function endpointAt(marks, p, scene = false) {
   for (let i = marks.length - 1; i >= 0; i--) {
     const s = marks[i],
       tip = s.points.at(-1);
-    if (s.material !== settings.material || s.color !== settings.color || s.secondary !== settings.secondary || s.mode === 'fan') continue;
+    if (s.material !== settings.material || s.density !== settings.density || s.color !== settings.color || s.secondary !== settings.secondary || s.mode === 'fan') continue;
     for (const [index, plane] of strokePlanes(s).entries()) {
       let center = [tip.x, tip.y, tip.z || 0];
       if (scene && sculpts.some(edit => edit.stroke === s && edit.index === index)) {
@@ -782,6 +721,8 @@ function startContinuation(end, p, id) {
     stroke: gesture.stroke
   } : edit);
   active = gesture;
+  // Same-ink strokes beside the resumed one share its fill, including later branches.
+  while (suffix.length && sameInk(suffix[0], gesture.stroke)) prefix.push(suffix.shift());
   if (suffix.length) {
     rebuild(suffix, true);
     composite(base, group);
@@ -789,9 +730,8 @@ function startContinuation(end, p, id) {
   }
   // Replay the old spine without its terminal dome. Keep earlier folds and grain.
   rebuild(prefix);
-  composite(base, group);
-  group = groupFor(gesture.stroke.color, gesture.stroke.secondary);
-  replay(group, gesture.stroke, false);
+  selectInk(gesture.stroke.color, gesture.stroke.secondary, gesture.stroke.material);
+  replaySceneStroke(group, gesture.stroke, false, !frontView());
 }
 function append(stroke, p) {
   const previous = stroke.points.at(-1),
@@ -818,7 +758,7 @@ function append(stroke, p) {
     }
   } else placeOnSurface(stroke, next, stroke.points.length);
   stroke.points.push(next);
-  layInk(group, stroke, previous, next, stroke.seed + (stroke.points.length - 1) * 92821);
+  inDrawingPlanes(group, stroke, () => layInk(group, stroke, previous, next, stroke.seed + (stroke.points.length - 1) * 92821), !frontView());
 }
 // Rotate each new hand movement by a distance-based heading. Raw pointer
 // positions and ink positions stay separate once the stroke starts to curl.
@@ -931,8 +871,8 @@ canvas.onpointerdown = e => {
     canvas.setPointerCapture(e.pointerId);
     return;
   }
+  showDrawingControls();
   remember();
-  specimens = false;
   const p = pointer(e, canvas.getBoundingClientRect());
   const end = endpointAt(strokes, p, true);
   if (end) {
@@ -946,7 +886,7 @@ canvas.onpointerdown = e => {
   const plane = space.enabled ? drawingPlane() : null;
   if (space.enabled && !frontView()) frontNeedsReplay = true;
   const mirrors = mirrorPlanes(plane);
-  if (mirrors.length || space.enabled && !frontView()) {
+  if (space.enabled && !frontView()) {
     composite(base, group);
     group = null;
   }
@@ -994,7 +934,7 @@ canvas.onpointerdown = e => {
     startAngle: null
   };
   placeOnSurface(stroke, stroke.points[0], 0);
-  replay(group, stroke, false);
+  inDrawingPlanes(group, stroke, () => replay(group, stroke, false), !frontView());
   canvas.setPointerCapture(e.pointerId);
   refresh();
   requestPaint();
@@ -1049,7 +989,6 @@ function finish(e) {
           delta,
           influence
         }];
-        specimens = false;
         refresh();
       }
     }
@@ -1080,39 +1019,13 @@ function finish(e) {
     rebuild();
     return;
   }
-  finishCartoon(group, active.stroke);
-  if (active.stroke.mirrors.length) {
-    drawPlanes(base, active.stroke, () => composite(base, group));
-    group = null;
-  }
+  inDrawingPlanes(group, active.stroke, () => finishCartoon(group, active.stroke), !frontView());
   active = null;
   requestPaint();
 }
 canvas.onpointerup = finish;
 canvas.onpointercancel = finish;
 canvas.onlostpointercapture = finish;
-function sampleStroke(mode, curve) {
-  const options = {
-    ...settings,
-    mode,
-    assist: .95
-  };
-  const first = curve(0),
-    s = makeStroke(options, {
-      ...first,
-      pressure: .5
-    });
-  s.seed = 64801;
-  for (let i = 1; i <= 640; i++) {
-    const p = curve(i / 640),
-      last = s.points.at(-1);
-    if (Math.hypot(p.x - last.x, p.y - last.y) > 1.4 || i === 640) s.points.push(nextPoint(s, {
-      ...p,
-      pressure: .5
-    }));
-  }
-  return s;
-}
 let previewFrame = 0,
   previewGesture = null;
 const previewMarks = [],
@@ -1135,18 +1048,26 @@ const previewSpace = {
   meshes: new Map(),
   welds: weldState()
 };
-function flattenPreview(g, layers) {
+function flattenPreview(g, layers, live) {
   for (const layer of [layers.outline, layers.paper, layers.stipple]) g.drawImage(layer.canvas, 0, 0);
+  if (live) finishCartoon({stipple:g},live);
+  layers.junctions?.draw(g,g.canvas.width,g.canvas.height);
 }
 function refreshPreviewPaper() {
   if (previewLight === studioLight.version && previewSheet) return;
   previewLight = studioLight.version;
   previewSheet = previewLayer();
-  for (const stroke of previewMarks) {
-    const layers = groupFor(stroke.color, stroke.secondary, previewLayer);
-    const live = previewGesture?.stroke === stroke;
-    replay(layers, stroke, !live);
-    if (live) previewInk = layers;else flattenPreview(previewSheet, layers);
+  previewInk = null;
+  const live = previewGesture?.stroke;
+  const marks = live ? [...previewMarks.filter(s => s !== live), live] : previewMarks;
+  for (const stroke of marks) {
+    if (!previewInk || !sameInk(previewInk, stroke)) {
+      if (previewInk) flattenPreview(previewSheet, previewInk);
+      previewInk = groupFor(stroke.color, stroke.secondary, previewLayer);
+      previewInk.material = stroke.material;
+      previewInk.trackJunctions = true;
+    }
+    replay(previewInk, stroke, stroke !== previewGesture?.stroke);
   }
 }
 function extendPreview(stroke, p) {
@@ -1172,7 +1093,12 @@ swatch.onpointerdown = e => {
   flatContact(stroke, previewMarks);
   refreshPreviewPaper();
   previewMarks.push(stroke);
-  previewInk = groupFor(stroke.color, stroke.secondary, previewLayer);
+  if (!previewInk || !sameInk(previewInk, stroke)) {
+    if (previewInk) flattenPreview(previewSheet, previewInk);
+    previewInk = groupFor(stroke.color, stroke.secondary, previewLayer);
+    previewInk.material = stroke.material;
+    previewInk.trackJunctions = true;
+  }
   replay(previewInk, stroke, false);
   previewGesture = {
     id: e.pointerId,
@@ -1197,12 +1123,9 @@ swatch.onpointerup = swatch.onpointercancel = swatch.onlostpointercapture = e =>
   if (e.type === 'pointerup') moveTo(previewPoint(e), true, previewGesture, extendPreview);
   penSound.stop();
   saveHeading(previewGesture);
-  if (previewGesture.end) previewSheet = null;else {
-    finishCartoon(previewInk, previewGesture.stroke);
-    flattenPreview(previewSheet, previewInk);
-  }
+  finishCartoon(previewInk, previewGesture.stroke);
+  if (previewGesture.end) previewSheet = null;
   previewGesture = null;
-  previewInk = null;
   schedulePreview();
 };
 resetSwatch.onclick = () => {
@@ -1237,10 +1160,7 @@ function schedulePreview() {
       refreshPreviewPaper();
       g.drawImage(previewSheet.canvas, 0, 0);
       if (previewInk) {
-        flattenPreview(g, previewInk);
-        if (previewGesture.stroke.points.length > 1) finishCartoon({
-          stipple: g
-        }, previewGesture.stroke);
+        flattenPreview(g, previewInk, previewGesture?.stroke);
       }
       return;
     }
@@ -1276,33 +1196,12 @@ function schedulePreview() {
   });
 }
 $('preview').parentElement.addEventListener('pointerenter', schedulePreview);
-function sampleSheet() {
-  const u = Math.min(width / 700, height / 460, 1),
-    cx = width / 2,
-    cy = height / 2;
-  return [sampleStroke('spiral', t => {
-    const a = t * Math.PI * 4.65,
-      r = (2 + Math.pow(t, 1.8) * 75) * u;
-    return {
-      x: cx - 92 * u + r * Math.cos(a),
-      y: cy + r * Math.sin(a)
-    };
-  }), sampleStroke('spire', t => {
-    const a = t * Math.PI * 11,
-      r = (1 + Math.pow(t, 1.25) * 32) * u;
-    return {
-      x: cx + 87 * u + r * Math.sin(a) + (t - .5) * 50 * u,
-      y: cy + (t - .5) * 183 * u + r * .36 * Math.cos(a)
-    };
-  })];
-}
 function resize() {
   width = $('paper').clientWidth;
   height = $('paper').clientHeight;
   ratio = Math.min(devicePixelRatio || 1, 2);
   canvas.width = Math.round(width * ratio);
   canvas.height = Math.round(height * ratio);
-  if (specimens) strokes = sampleSheet();
   rebuild();
 }
 function undo() {
@@ -1310,12 +1209,12 @@ function undo() {
   playEffect('plastic-key');
   redoStack.push({
     strokes: strokes.slice(),
-    specimens,
+    scenePhoto,
     sculpts
   });
   ({
     strokes,
-    specimens,
+    scenePhoto,
     sculpts
   } = undoStack.pop());
   refresh();
@@ -1326,12 +1225,12 @@ function redo() {
   playEffect('plastic-key');
   undoStack.push({
     strokes: strokes.slice(),
-    specimens,
+    scenePhoto,
     sculpts
   });
   ({
     strokes,
-    specimens,
+    scenePhoto,
     sculpts
   } = redoStack.pop());
   refresh();
@@ -1346,22 +1245,51 @@ document.addEventListener('keydown', e => {
   }
 });
 $('new').onclick = () => {
-  if (active || space.grab || !strokes.length) return;
+  if (active || space.grab || (!strokes.length && !scenePhoto)) return;
   remember();
   strokes = [];
+  scenePhoto = null;
   sculpts = [];
-  specimens = false;
   refresh();
   rebuild();
 };
-$('sample').onclick = () => {
-  if (active || space.grab || specimens) return;
-  remember();
-  sculpts = [];
-  specimens = true;
-  strokes = sampleSheet();
-  refresh();
-  rebuild();
+const photoInput = $('photo-file');
+let photoRequest = 0;
+$('add-photo').onclick = () => photoInput.click();
+photoInput.onchange = async () => {
+  const file = photoInput.files[0];
+  photoInput.value = '';
+  if (!file) return;
+  const request = ++photoRequest;
+  const url = URL.createObjectURL(file);
+  try {
+    const source = new Image();
+    source.src = url;
+    await source.decode();
+    if (request !== photoRequest || active || space.grab) return;
+    const image = document.createElement('canvas');
+    const scale = Math.min(1, 2048 / Math.max(source.naturalWidth, source.naturalHeight));
+    image.width = Math.max(1, Math.round(source.naturalWidth * scale));
+    image.height = Math.max(1, Math.round(source.naturalHeight * scale));
+    image.getContext('2d').drawImage(source, 0, 0, image.width, image.height);
+    const fit = Math.min(width * .68 / source.naturalWidth, height * .68 / source.naturalHeight);
+    const w = source.naturalWidth * fit, h = source.naturalHeight * fit;
+    remember();
+    scenePhoto = {image, w, h, x: (width - w) / 2, y: (height - h) / 2};
+    space.yaw = space.pitch = 0;
+    space.pivot = scenePivot(strokes, width, height);
+    updateSpaceUI();
+    refresh();
+    rebuild();
+  } catch {
+    if (request === photoRequest) {
+      $('info-title').textContent = 'Photo import';
+      $('info-text').textContent = 'This image could not be opened. Try a JPEG, PNG, or WebP copy.';
+      $('info').showModal();
+    }
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 };
 $('export').onclick = () => {
   paint();
@@ -1371,13 +1299,6 @@ $('export').onclick = () => {
   a.click();
   playEffect('export-chime', .6);
 };
-for (const button of document.querySelectorAll('[data-brush]')) {
-  button.onclick = () => {
-    settings.material = button.dataset.brush;
-    schedulePreview();
-    for (const other of document.querySelectorAll('[data-brush]')) other.setAttribute('aria-pressed', String(button === other));
-  };
-}
 const toggle = $('toggle'),
   panel = $('panel');
 toggle.onclick = () => {
@@ -1434,75 +1355,6 @@ for (const [id, key] of [['curl', 'curl'], ['assist', 'assist'], ['shade', 'dens
   input.oninput = () => setDial();
   setDial(false);
 }
-$('studio-menu').addEventListener('click', e => {
-  if (e.target.closest('button')) $('studio-menu').hidePopover();
-});
-const info = {
-  about: ['About', 'Umbo.Ink is a drawing tool for growing shell forms with outlined strokes and stippled ink.'],
-  instructions: ['Instructions', 'Choose a brush and drag on the canvas. Draw in Brush Preview to test a mark. Its × restores the sample. Drag a dial upward or to the right to increase it, or focus it and use the arrow keys. Spiral curls your stroke, Ridge shapes its ridges, and Density runs from clean outlines at zero to densely stippled shadows at full strength. Thickness changes the width of new marks. Irregularity gives their edges an uneven rhythm. Primary Color sets the pen color, Cartoon ink, or material tint. Secondary Color fills Cartoon and tints the Plastic and Metal finishes. Use × to return to paper white. Mirror X repeats new strokes left and right. Mirror Y repeats them above and below. Turn on both for four-way symmetry. Plastic has a glossy finish with a narrow white reflection. Metal draws lightly tarnished chrome. Cartoon uses stippled ink. Basic draws an even line in the primary color. Drag the white sphere in the 3D monitor to light Metal and Plastic. Choose Rotate to turn on 3D and drag to turn the shell. Draw also turns on 3D. Drag across the shell to lay a stroke along its visible surface. Lift and turn the shell to build on another side. Use the hand to gently push a short section of the stroke you touch. Rotate to pull from another angle. Undo reverses one pull. Option-drag also rotates while drawing. Use the tab to tuck the tools away.']
-};
-for (const button of document.querySelectorAll('[data-info]')) {
-  button.onclick = () => {
-    const [title, body] = info[button.dataset.info];
-    $('info-title').textContent = title;
-    $('info-text').textContent = body;
-    $('info').showModal();
-  };
-}
-const lightButton = $('light-sphere'),
-  lightScreen = lightButton.parentElement;
-let lightDrag = null,
-  lightFrame = 0;
-function showLight() {
-  lightScreen.style.setProperty('--lamp-x', 'calc(50% + ' + studioLight.x * 42 + '%)');
-  lightScreen.style.setProperty('--lamp-y', 'calc(50% + ' + studioLight.y * 36 + '%)');
-}
-function aimLight(x, y) {
-  if (active) return;
-  const limit = Math.max(1, Math.hypot(x, y) / .98);
-  studioLight.x = x / limit;
-  studioLight.y = y / limit;
-  studioLight.z = Math.sqrt(Math.max(0, 1 - studioLight.x ** 2 - studioLight.y ** 2));
-  studioLight.version++;
-  showLight();
-  if (!lightFrame) lightFrame = requestAnimationFrame(() => {
-    lightFrame = 0;
-    if (space.gl && space.enabled && !frontView()) {
-      frontNeedsReplay = true;
-      requestPaint();
-    } else if (strokes.some(s => s.material === 'metal' || s.material === 'plastic')) rebuild();
-    schedulePreview();
-  });
-}
-function dragLight(e) {
-  const bounds = lightScreen.getBoundingClientRect();
-  aimLight(((e.clientX - bounds.left) / bounds.width - .5) / .42, ((e.clientY - bounds.top) / bounds.height - .5) / .36);
-}
-lightButton.onpointerdown = e => {
-  if (e.button !== 0 || lightDrag !== null) return;
-  lightDrag = e.pointerId;
-  lightButton.setPointerCapture(e.pointerId);
-  e.preventDefault();
-};
-lightButton.onpointermove = e => {
-  if (lightDrag === e.pointerId) dragLight(e);
-};
-lightButton.onpointerup = lightButton.onpointercancel = lightButton.onlostpointercapture = () => {
-  lightDrag = null;
-};
-lightButton.onkeydown = e => {
-  const dir = {
-    ArrowUp: [0, -1],
-    ArrowDown: [0, 1],
-    ArrowLeft: [-1, 0],
-    ArrowRight: [1, 0]
-  }[e.key];
-  if (dir) {
-    e.preventDefault();
-    aimLight(studioLight.x + dir[0] * .07, studioLight.y + dir[1] * .07);
-  }
-};
-showLight();
 function orbitPivot() {
   // At the original front angle a new pivot does not change the composition.
   if (space.yaw === 0 && space.pitch === 0) return scenePivot(strokes, width, height);
@@ -1512,7 +1364,7 @@ function updateSpaceUI() {
   $('space-toggle').setAttribute('aria-pressed', String(space.enabled));
   cubeMonitor.refresh();
   if (!sculpts.length && (!space.enabled || frontView())) space.surface.hidden = true;
-  for (const tool of ['draw', 'rotate', 'hand']) $('space-' + tool).setAttribute('aria-pressed', String(space.enabled && tool === space.tool));
+  for (const tool of ['draw', 'rotate', 'hand']) $('space-' + tool).setAttribute('aria-pressed', String(tool === (space.enabled ? space.tool : 'draw')));
   document.body.dataset.tool = space.enabled ? space.tool : 'draw';
 }
 function setSpaceMode(tool) {
@@ -1550,6 +1402,7 @@ space.surface.addEventListener('webglcontextlost', e => {
   space.orbit = null;
   space.grab = null;
   space.gl = null;
+  space.photoLayer = null;
   space.meshes.clear();
   updateSpaceUI();
   rebuild();
@@ -1559,29 +1412,6 @@ schedulePreview();
 refresh();
 document.addEventListener('click', e => {
   const button = e.target.closest('button');
-  if (!button || button.disabled) return;
+  if (!button || button.disabled || button.hasAttribute('data-action')) return;
   if (button.matches('#toggle,#mirror-lr,#mirror-tb')) playEffect('latching-switch');else if (!button.matches('#export,#space-toggle,#space-draw,#space-rotate,#space-hand,#light-sphere,#undo,#redo')) playEffect('plastic-key');
 });
-function playBootSound() {
-  let audio = $('boot-sound');
-  // Alternate takes within this tab, starting with the original four-second voice.
-  try {
-    if (sessionStorage.getItem('umbo-next-voice') === 'alternate') audio = $('umbo-boot-voice');
-    sessionStorage.setItem('umbo-next-voice', audio.id === 'boot-sound' ? 'alternate' : 'original');
-  } catch {}
-  const listeners = new AbortController();
-  function play() {
-    audio.play().then(() => listeners.abort()).catch(error => {
-      if (error.name !== 'NotAllowedError') listeners.abort();
-    });
-  }
-  // A fresh browser session can require a user gesture before allowing sound.
-  for (const event of ['click', 'keydown']) {
-    document.addEventListener(event, play, {
-      capture: true,
-      signal: listeners.signal
-    });
-  }
-  play();
-}
-playBootSound();

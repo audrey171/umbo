@@ -11,10 +11,10 @@ function weldState() {
 }
 const welds = weldState();
 const weldCell = 32;
-function prepareWelds(items, state = welds) {
-  const polished = items.filter(isPolished);
-  const edits = state === welds ? sculpts : null,
-    drag = state === welds && space.grab?.moved ? space.grab.delta : null;
+function prepareWelds(items, state = welds, spatialInk = false) {
+  const polished = items.filter(s => isPolished(s) || (spatialInk && s.material === "cartoon" && s.mode !== "fan"));
+  const edits = (state === welds || spatialInk) ? sculpts : null,
+    drag = (state === welds || spatialInk) && space.grab?.moved ? space.grab.delta : null;
   if (state.edits === edits && state.drag === drag && polished.length === state.items.length && polished.every((s, i) => s === state.items[i].stroke && s.points.length === state.items[i].length)) return;
   state.items = polished.map(stroke => ({
     stroke,
@@ -69,7 +69,7 @@ function prepareWelds(items, state = welds) {
           let bin = cells.get(key);
           if (!bin) cells.set(key, bin = []);
           for (const other of bin) {
-            if (other.part.s.material !== s.material) continue;
+            if (other.part.s.material !== s.material || (spatialInk && !sameInk(other.part.s,s))) continue;
             if (other.part === part && s.points[a].d - s.points[other.to].d < 3 * (other.r + r) + 8) continue;
             const pad = r + other.r + Math.min(10, r, other.r);
             if (start.some((v, k) => Math.min(v, end[k]) > Math.max(other.start[k], other.end[k]) + pad || Math.max(v, end[k]) < Math.min(other.start[k], other.end[k]) - pad)) continue;
@@ -162,6 +162,7 @@ function fusedMeshes(cluster) {
   const floats = () => new Float32Array(total);
   const field = floats(),
     dist = floats(),
+    neighbor = floats(),
     radii = floats(),
     localRadius = floats(),
     rings = floats(),
@@ -175,6 +176,7 @@ function fusedMeshes(cluster) {
     layers
   } of tiles.values()) {
     field.fill(1e5);
+    neighbor.fill(1e5);
     vertices.fill(null);
     for (const [id, layer] of layers) {
       dist.fill(1e5);
@@ -220,6 +222,7 @@ function fusedMeshes(cluster) {
         if (d === 1e5) continue;
         const old = field[i],
           k = Math.min(20, localRadius[i], radii[i]) * .95;
+        neighbor[i] = Math.min(neighbor[i], Math.max(old, d));
         const overlap = Math.max(0, k - Math.abs(d - old));
         field[i] = Math.min(d, old) - (k > 0 ? overlap * overlap / (4 * k) : 0);
         if (d < old) {
@@ -270,7 +273,12 @@ function fusedMeshes(cluster) {
           b = vertices[i - u],
           c = vertices[i - u - v],
           d = vertices[i - v];
-        for (const vert of [a, b, c, a, c, d]) dst.push(...vert, ring);
+        const {plane} = parts[owner[source]];
+        const blend = 1 - smoothBand(neighbor[source] / Math.max(.01,radii[source]), 0, .7);
+        for (const vert of [a,b,c,a,c,d]) {
+          const local = difference(vert.slice(0,3),plane.origin);
+          dst.push(vert[0],vert[1],vert[2],dot3(local,plane.right),dot3(local,plane.down),vert[5],vert[6],vert[7],ring,blend);
+        }
       }
     }
   }

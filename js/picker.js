@@ -17,7 +17,8 @@
       v: 1
     }
   };
-  let target = null,
+  const triggers = document.querySelectorAll('#primary,#secondary,[data-ink]');
+  let target = null, anchor = null,
     pointer = null;
   function readColor(color) {
     const [r, g, b] = [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16) / 255);
@@ -69,15 +70,17 @@
     settings[secondary ? 'secondary' : 'color'] = color;
     schedulePreview();
     target.value = color || '';
-    target.style.setProperty('--ink', color || '#ffffff');
-    target.classList.toggle('unset', !color);
+    for (const button of triggers) if ((button.dataset.ink || button.id) === target.id) {
+      button.style.setProperty('--ink', color || '#ffffff');
+      button.classList.toggle('unset', !color);
+    }
     if (secondary) $('clear-secondary').hidden = !color;
     if (!color) readColor('#ffffff');
     sync();
   }
   function place() {
     if (!target || !popup.matches(':popover-open')) return;
-    const rect = target.getBoundingClientRect();
+    const rect = anchor.getBoundingClientRect();
     const x = Math.max(8, Math.min(rect.left, innerWidth - popup.offsetWidth - 8));
     const below = rect.bottom + 7,
       above = rect.top - popup.offsetHeight - 7;
@@ -87,24 +90,24 @@
   }
   function close() {
     popup.hidePopover();
-    target.focus({
+    anchor.focus({
       preventScroll: true
     });
   }
-  for (const id of ['primary', 'secondary']) {
-    const trigger = $(id);
+  for (const trigger of triggers) {
     trigger.onclick = e => {
       e.preventDefault();
-      if (popup.matches(':popover-open') && trigger === target) {
+      if (popup.matches(':popover-open') && trigger === anchor) {
         close();
         return;
       }
-      target?.setAttribute('aria-expanded', 'false');
-      target = trigger;
+      anchor?.setAttribute('aria-expanded', 'false');
+      anchor = trigger;
+      target = $(trigger.dataset.ink || trigger.id);
       $('ink-title').textContent = trigger.getAttribute('aria-label');
-      if (!trigger.dataset.pickerReady) {
-        readColor(trigger.value || '#ffffff');
-        trigger.dataset.pickerReady = 'true';
+      if (!target.dataset.pickerReady) {
+        readColor(target.value || '#ffffff');
+        target.dataset.pickerReady = 'true';
       }
       sync();
       if (!popup.matches(':popover-open')) popup.showPopover();
@@ -117,7 +120,7 @@
   }
   popup.addEventListener('toggle', () => {
     const open = popup.matches(':popover-open');
-    for (const id of ['primary', 'secondary']) $(id).setAttribute('aria-expanded', String(open && $(id) === target));
+    for (const button of triggers) button.setAttribute('aria-expanded', String(open && button === anchor));
   });
   window.addEventListener('resize', place);
   $('panel').addEventListener('scroll', place);

@@ -47,6 +47,10 @@ function strokePlanes(stroke) {
 function scenePivot(items, w, h) {
   const lo = [Infinity, Infinity, Infinity],
     hi = [-Infinity, -Infinity, -Infinity];
+  if (scenePhoto) {
+    lo.splice(0, 3, scenePhoto.x, scenePhoto.y, -1);
+    hi.splice(0, 3, scenePhoto.x + scenePhoto.w, scenePhoto.y + scenePhoto.h, -1);
+  }
   for (const stroke of items) for (const plane of strokePlanes(stroke)) for (const p of stroke.points) {
     const v = worldPoint(plane, p.x, p.y, p.z || 0);
     for (let i = 0; i < 3; i++) {
@@ -61,26 +65,31 @@ function initSpatial(target = space) {
   const gl = target.surface.getContext('webgl', {
     alpha: false,
     antialias: true,
+    stencil: true,
     preserveDrawingBuffer: true
   });
   if (!gl) return false;
-  const vertex = `attribute vec3 pos,normal;varying vec3 viewNormal;attribute vec2 paper;attribute float ringId;
-    uniform float firstRing;varying highp float hitRing;
+  const vertex = `attribute vec3 pos,normal;varying vec3 viewNormal;attribute vec2 paper;attribute float ringId,joinBlend;varying float joinWeight;varying highp vec3 inkPosition;
+    uniform float firstRing,outlineWidth;varying highp float hitRing;
     uniform vec3 pivot,axisX,axisY,axisZ;uniform vec2 viewport,viewOrigin;
     uniform mat4 model;uniform vec4 inkRect;varying vec2 uv;
     void main(){
       vec3 world=(model*vec4(pos,1.)).xyz;
+      joinWeight=joinBlend;inkPosition=world;
       vec3 n=mat3(model)*normal;viewNormal=vec3(dot(n,axisX),dot(n,axisY),dot(n,axisZ));
       vec3 p=world-pivot;
       vec2 screen=pivot.xy+vec2(dot(p,axisX),dot(p,axisY))-viewOrigin;
+      screen+=outlineWidth*viewNormal.xy;
       hitRing=firstRing+ringId;
       gl_Position=vec4(screen.x/viewport.x*2.-1.,1.-screen.y/viewport.y*2.,-dot(p,axisZ)/24000.,1.);
       uv=(paper-inkRect.xy)/inkRect.zw;
     }`;
   const fragment = `precision highp float;
-    varying highp float hitRing;varying vec2 uv;uniform sampler2D strokeInk,finishMap;uniform float pick,finished,metalSurface;uniform vec4 basicInk;varying vec3 viewNormal;
+    varying float joinWeight;varying highp vec3 inkPosition;uniform vec3 lineInk;uniform float inkDensity;
+    varying highp float hitRing;varying vec2 uv;uniform sampler2D strokeInk,finishMap;uniform float pick,finished,metalSurface;uniform vec4 basicInk,cartoonPaper;varying vec3 viewNormal;
     void main(){
       vec4 mark=basicInk.a>.5?basicInk:(finished>.5?vec4(1.):texture2D(strokeInk,uv));
+      if(cartoonPaper.a>.5)mark=vec4(mix(cartoonPaper.rgb,mark.rgb,mark.a),1.);
       if(mark.a<.01)discard;
       if(pick>1.5){
         float id=floor(hitRing+.5);
@@ -92,6 +101,14 @@ function initSpatial(target = space) {
         if(finished>.5){
           vec3 n=normalize(viewNormal);
           gl_FragColor=vec4(texture2D(finishMap,.5+.488*n.xy).rgb,mark.a);
+        }else if(joinWeight>0. && cartoonPaper.a>.5){
+          vec3 n=normalize(viewNormal);
+          float tone=max(0.,.48+.22*inkDensity-.68*max(0.,n.z)+.54*dot(n.xy,vec2(.6,.8)));
+          float edge=pow(clamp(1.-n.z*n.z,0.,1.),3.);
+          float chance=clamp((.004+.2*edge+.56*tone)*inkDensity*(.85+4.15*inkDensity),0.,.96);
+          vec3 h=fract(floor(inkPosition/(.85+.35*inkDensity))*vec3(.1031,.1030,.0973));h+=dot(h,h.yxz+33.33);
+          float grain=chance>0. ? step(fract((h.x+h.y)*h.z),chance) : 0.;
+          gl_FragColor=vec4(mix(mark.rgb,mix(cartoonPaper.rgb,lineInk,grain),joinWeight),1.);
         }else gl_FragColor=mark;
       }
     }`;
@@ -112,8 +129,8 @@ function initSpatial(target = space) {
   target.depthTarget = null;
   target.uniform = {};
   target.attribute = {};
-  for (const key of ['pivot', 'axisX', 'axisY', 'axisZ', 'viewport', 'viewOrigin', 'firstRing', 'pick', 'strokeInk', 'finishMap', 'finished', 'metalSurface', 'basicInk', 'inkRect', 'model']) target.uniform[key] = gl.getUniformLocation(program, key);
-  for (const key of ['pos', 'normal', 'paper', 'ringId']) target.attribute[key] = gl.getAttribLocation(program, key);
+  for (const key of ['pivot', 'axisX', 'axisY', 'axisZ', 'viewport', 'viewOrigin', 'firstRing', 'pick', 'strokeInk', 'finishMap', 'finished', 'metalSurface', 'basicInk', 'inkRect', 'model', 'cartoonPaper', 'outlineWidth','lineInk','inkDensity']) target.uniform[key] = gl.getUniformLocation(program, key);
+  for (const key of ['pos', 'normal', 'paper', 'ringId','joinBlend']) target.attribute[key] = gl.getAttribLocation(program, key);
   target.textureLimit = gl.getParameter(gl.MAX_TEXTURE_SIZE);
   gl.uniform1i(target.uniform.strokeInk, 0);
   gl.uniform1i(target.uniform.finishMap, 1);
@@ -218,7 +235,7 @@ function meshData(s, centers = null) {
         side = unit3(cross3([0, 0, 1], tangent), [nx, ny, 0]);
         depth = cross3(tangent, side);
       }
-      const r = s.mode === 'fan' ? widthScale(s) * .5 : p.r + (s.material === 'basic' || polished ? 0 : .78),
+      const r = s.mode === 'fan' ? widthScale(s) * .5 : p.r,
         row = ring(p, nx, ny, r);
       function dome(sign) {
         let previous = row;
@@ -231,9 +248,9 @@ function meshData(s, centers = null) {
           previous = next;
         }
       }
-      if (last) strip(last, row);else if (polished) dome(-1);else strip(ring(p, nx, ny, .02, -r * .75), row);
+      if (last) strip(last, row);else if (polished || s.material === 'cartoon') dome(-1);else strip(ring(p, nx, ny, .02, -r * .75), row);
       if (p === tip) {
-        if (polished) dome(1);else strip(row, ring(p, nx, ny, .02, r * .75));
+        if (polished || s.material === 'cartoon') dome(1);else strip(row, ring(p, nx, ny, .02, r * .75));
       }
       last = row;
     }
@@ -270,20 +287,21 @@ function bakeStrokeInk(stroke, data, gl, target) {
   if (stroke.mode === 'fan') {
     drawFanRib(output, stroke);
   } else {
-    const useLive = active?.stroke === stroke && !frontView() && left >= 0 && top >= 0 && left + w <= width && top + h <= height;
-    const ink = useLive ? group : groupFor(stroke.color, stroke.secondary, localLayer);
-    if (!useLive) replay(ink, stroke);
+    // A rotating-view gesture already has a local grain layer. Copy its new
+    // texture without replaying the whole stroke on every pointer move.
+    const live = active?.stroke === stroke && !active.end && !frontView() &&
+      left >= 0 && top >= 0 && left + w <= width && top + h <= height;
+    const ink = live ? group : groupFor(stroke.color, stroke.secondary, localLayer);
+    if (!live) replay(ink, stroke);
     output.save();
     output.setTransform(1, 0, 0, 1, 0, 0);
-    for (const layer of [ink.outline, ink.paper, ink.stipple]) {
-      if (useLive) {
-        output.drawImage(layer.canvas, left * ratio, top * ratio, w * ratio, h * ratio, 0, 0, output.canvas.width, output.canvas.height);
-      } else output.drawImage(layer.canvas, 0, 0);
+    const layers = stroke.material === 'cartoon' ? [ink.stipple] : [ink.outline, ink.paper, ink.stipple];
+    for (const layer of layers) {
+      if (live) output.drawImage(layer.canvas, left * ratio, top * ratio, w * ratio, h * ratio, 0, 0, output.canvas.width, output.canvas.height);
+      else output.drawImage(layer.canvas, 0, 0);
     }
     output.restore();
-    if (useLive) finishCartoon({
-      stipple: output
-    }, stroke);
+    if (live) finishCartoon({stipple: output}, stroke);
   }
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, output.canvas);
   return [left, top, w, h];
@@ -350,7 +368,7 @@ function ringNumbers(stroke) {
   const count = stroke.points.length,
     polished = isPolished(stroke);
   const sides = polished ? 32 : ringSides,
-    caps = polished ? capBands : 1,
+    caps = polished || stroke.material === 'cartoon' ? capBands : 1,
     bands = count - 1 + 2 * caps;
   const ids = new Float32Array(bands * sides * 6);
   let k = 0;
@@ -364,6 +382,46 @@ function ringNumbers(stroke) {
   }
   return ids;
 }
+// The photograph belongs to the original drawing plane in world coordinates.
+function renderPhoto(target, photo) {
+  const {gl, uniform: u, attribute: a} = target;
+  let layer = target.photoLayer;
+  if (layer && layer.photo !== photo) {
+    gl.deleteBuffer(layer.buffer);
+    gl.deleteTexture(layer.texture);
+    target.photoLayer = layer = null;
+  }
+  if (!photo) return;
+  gl.activeTexture(gl.TEXTURE0);
+  if (!layer) {
+    const {x, y, w, h, image} = photo;
+    layer = target.photoLayer = {photo, buffer: gl.createBuffer(), texture: gl.createTexture()};
+    gl.bindBuffer(gl.ARRAY_BUFFER, layer.buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      x, y, -1, 0, 0, x + w, y, -1, 1, 0,
+      x, y + h, -1, 0, 1, x + w, y + h, -1, 1, 1
+    ]), gl.STATIC_DRAW);
+    gl.bindTexture(gl.TEXTURE_2D, layer.texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+    for (const key of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, key, gl.LINEAR);
+    for (const key of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, key, gl.CLAMP_TO_EDGE);
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, layer.buffer);
+  gl.bindTexture(gl.TEXTURE_2D, layer.texture);
+  gl.enableVertexAttribArray(a.pos);
+  gl.enableVertexAttribArray(a.paper);
+  gl.disableVertexAttribArray(a.normal);
+  gl.disableVertexAttribArray(a.joinBlend);
+  gl.disableVertexAttribArray(a.ringId);
+  gl.vertexAttribPointer(a.pos, 3, gl.FLOAT, false, 20, 0);
+  gl.vertexAttribPointer(a.paper, 2, gl.FLOAT, false, 20, 12);
+  gl.uniform4f(u.basicInk, 0, 0, 0, 0);
+  gl.uniform4f(u.cartoonPaper, 0, 0, 0, 0);
+  gl.uniform1f(u.finished, 0);
+  gl.uniform4f(u.inkRect, 0, 0, 1, 1);
+  gl.uniformMatrix4fv(u.model, false, [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
 function renderSpace(items, picking = false, hit = null, map = null, target = space) {
   const preview = target !== space,
     gl = target.gl,
@@ -372,7 +430,8 @@ function renderSpace(items, picking = false, hit = null, map = null, target = sp
   const drawing = preview ? swatch : canvas,
     viewW = preview ? drawing.width : width,
     viewH = preview ? drawing.height : height;
-  const joins = preview ? target.welds : welds;
+  const spatialInk = !preview && (!frontView() || sculpts.length || space.grab?.moved || items.some(s => s.plane && Math.abs(s.plane.front[2]-1)>1e-8));
+  const joins = spatialInk ? (target.spatialWelds ||= weldState()) : preview ? target.welds : welds;
   if (target.surface.width !== drawing.width || target.surface.height !== drawing.height) {
     target.surface.width = drawing.width;
     target.surface.height = drawing.height;
@@ -388,7 +447,8 @@ function renderSpace(items, picking = false, hit = null, map = null, target = sp
   gl.uniform2f(u.viewport, hit ? 1 / ratio : viewW, hit ? 1 / ratio : viewH);
   gl.uniform1f(u.pick, hit ? 2 : picking ? 1 : 0);
   if (picking) gl.disable(gl.BLEND);else gl.enable(gl.BLEND);
-  prepareWelds(items, joins);
+  if (!preview && !picking) renderPhoto(target, scenePhoto);
+  prepareWelds(items, joins, spatialInk);
   const live = new Set(items);
   for (const [s, entry] of target.meshes) if (!live.has(s)) {
     for (const shape of entry.shapes) {
@@ -401,7 +461,7 @@ function renderSpace(items, picking = false, hit = null, map = null, target = sp
     gl.deleteTexture(entry.texture);
     target.meshes.delete(s);
   }
-  for (const s of items) {
+  function drawStroke(s, outline = false) {
     let entry = target.meshes.get(s);
     if (!entry) {
       entry = {
@@ -434,9 +494,22 @@ function renderSpace(items, picking = false, hit = null, map = null, target = sp
       entry.ratio = ratio;
     }
     const finished = isPolished(s);
-    if (entry.basicInk) gl.uniform4fv(u.basicInk, entry.basicInk);else gl.uniform4f(u.basicInk, 0, 0, 0, 0);
+    const cartoon = s.material === 'cartoon' && s.mode !== 'fan';
+    if (cartoon && !entry.paperColor) {
+      const rgba = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).concat(1);
+      entry.paperColor = rgba(s.secondary || '#ffffff');
+      entry.lineColor = rgba(s.color);
+    }
+    if (cartoon && !outline) {
+      gl.uniform4fv(u.cartoonPaper, entry.paperColor);
+      gl.uniform3f(u.lineInk,...entry.lineColor.slice(0,3));
+      gl.uniform1f(u.inkDensity,s.density);
+    }
+    else gl.uniform4f(u.cartoonPaper, 0, 0, 0, 0);
+    if (outline) gl.uniform4fv(u.basicInk, entry.lineColor);
+    else if (entry.basicInk) gl.uniform4fv(u.basicInk, entry.basicInk);else gl.uniform4f(u.basicInk, 0, 0, 0, 0);
     gl.uniform1f(u.finished, finished ? 1 : 0);
-    gl.uniform1f(u.metalSurface, s.material === 'metal' ? 1 : s.material === 'plastic' ? 2 : 0);
+    gl.uniform1f(u.metalSurface, s.material === 'metal' ? 1 : s.material === 'plastic' ? 2 : cartoon ? 3 : 0);
     if (!picking && finished) {
       gl.activeTexture(gl.TEXTURE1);
       entry.finishMap ||= gl.createTexture();
@@ -450,7 +523,7 @@ function renderSpace(items, picking = false, hit = null, map = null, target = sp
       gl.activeTexture(gl.TEXTURE0);
     }
     if (hit) {
-      if (s.mode === 'fan') continue;
+      if (s.mode === 'fan') return;
       entry.ringBuffer ||= gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, entry.ringBuffer);
       if (entry.ringCount !== s.points.length) {
@@ -480,17 +553,20 @@ function renderSpace(items, picking = false, hit = null, map = null, target = sp
         const shape = entry.shapes[index] ||= {};
         shape.weldBuffer ||= gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, shape.weldBuffer);
-        if (shape.weldVersion !== joins.version) {
+        if (shape.cluster !== merged) {
           const data = fusedMeshes(merged).get(part);
           gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
-          shape.count = data.length / 9;
-          shape.weldVersion = joins.version;
+          shape.count = data.length / 10;
+          shape.cluster = merged;
         }
         count = shape.count;
-        stride = 36;
+        stride = 40;
+        gl.enableVertexAttribArray(target.attribute.joinBlend);
+        gl.vertexAttribPointer(target.attribute.joinBlend,1,gl.FLOAT,false,stride,36);
         model = paperPlane;
         if (hit) gl.vertexAttribPointer(target.attribute.ringId, 1, gl.FLOAT, false, stride, 32);
       } else {
+        gl.disableVertexAttribArray(target.attribute.joinBlend);
         if (hit) {
           gl.bindBuffer(gl.ARRAY_BUFFER, entry.ringBuffer);
           gl.vertexAttribPointer(target.attribute.ringId, 1, gl.FLOAT, false, 0, 0);
@@ -505,6 +581,27 @@ function renderSpace(items, picking = false, hit = null, map = null, target = sp
       gl.uniformMatrix4fv(u.model, false, [...model.right, 0, ...model.down, 0, ...model.front, 0, ...model.origin, 1]);
       gl.drawArrays(gl.TRIANGLES, 0, count);
     }
+  }
+  for (let i = 0; i < items.length;) {
+    const first = items[i];
+    if (picking || first.material !== 'cartoon' || first.mode === 'fan') {
+      drawStroke(items[i++]);
+      continue;
+    }
+    const start = i++;
+    while (i < items.length && items[i].mode !== 'fan' && sameInk(first, items[i])) i++;
+    // Mark visible ink in the stencil. The expanded shell can ink only its outside edge.
+    gl.clear(gl.STENCIL_BUFFER_BIT);
+    gl.enable(gl.STENCIL_TEST);
+    gl.stencilFunc(gl.ALWAYS, 1, 255);
+    gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+    for (let j = start; j < i; j++) drawStroke(items[j]);
+    gl.stencilFunc(gl.EQUAL, 0, 255);
+    gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+    gl.uniform1f(u.outlineWidth, .78);
+    for (let j = start; j < i; j++) drawStroke(items[j], true);
+    gl.uniform1f(u.outlineWidth, 0);
+    gl.disable(gl.STENCIL_TEST);
   }
 }
 // A single-sample target keeps IDs exact even where two coils overlap at their edges.
@@ -598,9 +695,9 @@ function surfaceAt(map, p, contact = null) {
     const d = x * x + y * y;
     if (d >= best || d > reach * reach || cx + x < 0 || cy + y < 0 || cx + x >= map.w || cy + y >= map.h) continue;
     const i = 4 * ((cy + y) * map.w + cx + x);
-    if (map.pixels[i + 2] > 2) continue;
+    if (map.pixels[i + 2] > 3) continue;
     if (contact) {
-      contact.finish = ['', 'metal', 'plastic'][map.pixels[i + 2]];
+      contact.finish = ['', 'metal', 'plastic', 'cartoon'][map.pixels[i + 2]];
       contact.x = (cx + x + .5) * width / map.w;
       contact.y = (map.h - cy - y - .5) * height / map.h;
     }
