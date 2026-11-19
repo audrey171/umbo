@@ -1332,6 +1332,7 @@ toggle.onclick = () => {
   toggle.setAttribute('aria-expanded', String(!closed));
   toggle.setAttribute('aria-label', closed ? 'Open drawer' : 'Collapse drawer');
 };
+const mobileDials = matchMedia('(max-width:620px)');
 for (const [id, key] of [['curl', 'curl'], ['assist', 'assist'], ['shade', 'density'], ['thickness', 'thickness'], ['irregularity', 'irregularity'], ['taper', 'taper'], ['influence', 'influence']]) {
   const input = $(id),
     knob = input.parentElement,
@@ -1362,6 +1363,8 @@ for (const [id, key] of [['curl', 'curl'], ['assist', 'assist'], ['shade', 'dens
       x: e.clientX,
       y: e.clientY,
       value: Number(input.value),
+      touch: e.pointerType === 'touch' && mobileDials.matches,
+      axis: null,
       id: e.pointerId
     };
   };
@@ -1369,7 +1372,13 @@ for (const [id, key] of [['curl', 'curl'], ['assist', 'assist'], ['shade', 'dens
     if (!drag || e.pointerId !== drag.id) return;
     const dx = e.clientX - drag.x,
       dy = drag.y - e.clientY;
-    input.value = Math.round(drag.value + (Math.abs(dx) > Math.abs(dy) ? dx : dy) * (max - min) / 120);
+    const dominant = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+    if (drag.touch && !drag.axis) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 3) return;
+      drag.axis = dominant;
+    }
+    const delta = (drag.axis || dominant) === 'x' ? dx : dy;
+    input.value = Math.round(drag.value + delta * (max - min) / (drag.touch ? 80 : 120));
     setDial();
   };
   input.onlostpointercapture = () => {
