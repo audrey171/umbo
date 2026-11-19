@@ -28,6 +28,7 @@ let width = 1,
   frame = 0;
 function playEffect(name, volume = .5, offset = 0) {
   const clip = $(name);
+  if (!clip.hasAttribute('src')) clip.src = clip.dataset.src;
   clip.volume = volume;
   clip.currentTime = offset;
   clip.play().catch(() => {});
@@ -54,6 +55,7 @@ const penSound = (() => {
     if (!moving) {
       moving = true;
       cancelAnimationFrame(fade);
+      if (!clip.hasAttribute('src')) clip.src = clip.dataset.src;
       clip.volume = .22;
       clip.play().catch(() => {
         moving = false;
@@ -1215,9 +1217,12 @@ function schedulePreview() {
 }
 $('preview').parentElement.addEventListener('pointerenter', schedulePreview);
 function resize() {
-  width = $('paper').clientWidth;
-  height = $('paper').clientHeight;
-  ratio = Math.min(devicePixelRatio || 1, 2);
+  const paper = $('paper');
+  const nextRatio = Math.min(devicePixelRatio || 1, 2);
+  if (base && width === paper.clientWidth && height === paper.clientHeight && ratio === nextRatio) return;
+  width = paper.clientWidth;
+  height = paper.clientHeight;
+  ratio = nextRatio;
   canvas.width = Math.round(width * ratio);
   canvas.height = Math.round(height * ratio);
   rebuild();
@@ -1425,6 +1430,7 @@ space.surface.addEventListener('webglcontextlost', e => {
   updateSpaceUI();
   rebuild();
 });
+resize();
 new ResizeObserver(resize).observe($('paper'));
 schedulePreview();
 refresh();

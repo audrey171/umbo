@@ -5,13 +5,13 @@
 <link rel="icon" type="image/svg+xml" sizes="any" href="assets/favicon.svg">
 </head>
 <body>
-<audio id="plastic-key" preload="auto" src="assets/audio/plastic-key.opus"></audio>
-<audio id="latching-switch" preload="auto" src="assets/audio/latching-switch.opus"></audio>
-<audio id="slider-notch-01" preload="auto" src="assets/audio/slider-notch-01.opus"></audio>
-<audio id="slider-notch-02" preload="auto" src="assets/audio/slider-notch-02.opus"></audio>
-<audio id="terminal-power-on" preload="auto" src="assets/audio/terminal-power-on.opus"></audio>
-<audio id="export-chime" preload="auto" src="assets/audio/export-chime.opus"></audio>
-<audio id="pen-loop" preload="auto" loop src="assets/audio/pen-loop.mp3"></audio>
+<audio id="plastic-key" preload="none" data-src="assets/audio/plastic-key.opus"></audio>
+<audio id="latching-switch" preload="none" data-src="assets/audio/latching-switch.opus"></audio>
+<audio id="slider-notch-01" preload="none" data-src="assets/audio/slider-notch-01.opus"></audio>
+<audio id="slider-notch-02" preload="none" data-src="assets/audio/slider-notch-02.opus"></audio>
+<audio id="terminal-power-on" preload="none" data-src="assets/audio/terminal-power-on.opus"></audio>
+<audio id="export-chime" preload="none" data-src="assets/audio/export-chime.opus"></audio>
+<audio id="pen-loop" preload="none" loop data-src="assets/audio/pen-loop.mp3"></audio>
 <main id="paper"><canvas id="drawing" aria-label="Drawing canvas"></canvas><canvas id="spatial" hidden aria-hidden="true"></canvas></main>
 <aside id="drawer" aria-label="Shell drawing tools"><div id="panel">
 <section class="brush-section"><h2>Brush</h2><div class="box brush-body"><div class="knobs"><label><span class="knob"><img src="assets/ui/dial.svg" alt=""><img src="assets/ui/needle.svg" class="needle" alt=""><input id="curl" aria-label="Spiral" type="range" min="0" max="100" value="0"></span>Spiral</label>
